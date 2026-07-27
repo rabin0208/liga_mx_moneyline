@@ -1,0 +1,17 @@
+name: liga_mx_moneyline
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pandas
+  - numpy
+  - scikit-learn
+  - scipy
+  - joblib
+  - requests
+  - jupyter
+  - matplotlib
+  - seaborn
+  - pip
+  - altair

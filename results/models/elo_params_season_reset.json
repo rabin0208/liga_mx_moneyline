@@ -1,0 +1,14 @@
+{
+  "k": 15.0,
+  "home_adv": 40.0,
+  "season_reset": true,
+  "initial_rating": 1500.0,
+  "test_seasons": [
+    "2025/2026",
+    "2026/2027"
+  ],
+  "n_train": 4312,
+  "n_test": 345,
+  "coef_elo_edge": 0.0047570535395224335,
+  "intercept": -0.23573028218331984
+}
