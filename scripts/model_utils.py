@@ -6,7 +6,20 @@ from __future__ import annotations
 LAG_WINDOW = 5
 
 # Holdout seasons for train/test (string labels as in MEX.csv Season column).
+# Train = all seasons strictly before the earliest test season (so later years
+# are excluded from both train and test — no future leakage).
 TEST_SEASONS: list[str] = ["2025/2026", "2026/2027"]
+
+
+def train_test_season_sets(
+    all_seasons: list[str] | set[str],
+    test_seasons: list[str] | None = None,
+) -> tuple[set[str], set[str]]:
+    """Train = seasons before min(test); test = TEST_SEASONS; later years dropped."""
+    test = set(test_seasons if test_seasons is not None else TEST_SEASONS)
+    first_test = min(test)
+    train = {str(s) for s in all_seasons if str(s) < first_test}
+    return train, test
 
 
 def team_lag_column_names() -> list[str]:

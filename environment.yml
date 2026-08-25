@@ -15,3 +15,5 @@ dependencies:
   - seaborn
   - pip
   - altair
+  - pip:
+    - streamlit

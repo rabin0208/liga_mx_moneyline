@@ -219,6 +219,7 @@ def main() -> None:
     metrics = {
         "mode": "static" if args.static else "expanding",
         "xi": args.xi,
+        "intercept": model.intercept,
         "home_adv": model.home_adv,
         "rho": model.rho,
         "n_train": int(len(train_s)),

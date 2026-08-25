@@ -9,6 +9,8 @@ Usage:
   python scripts/fit_elo_model.py
   python scripts/fit_elo_model.py --season-reset
   python scripts/fit_elo_model.py --compare-reset
+  python scripts/fit_elo_model.py --mid-season
+  python scripts/fit_elo_model.py --mid-season --season-reset
   python scripts/fit_elo_model.py --k 20 --home-adv 80
 """
 from __future__ import annotations
@@ -65,6 +67,37 @@ def load_matches() -> pd.DataFrame:
         "dc_odds",
     ]
     return df.dropna(subset=needed).reset_index(drop=True)
+
+
+def add_season_half(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Label each game as season half 1 or 2 by chronological order within Season.
+
+    First floor(n/2) games → half 1 (warm-up); the rest → half 2 (scored).
+    Elo still updates through both halves; only evaluation uses half 2.
+    """
+    out = df.copy()
+    out["season_half"] = 0
+    for _, season_df in out.groupby("season", sort=False):
+        n = len(season_df)
+        cutoff = n // 2
+        halves = [1] * cutoff + [2] * (n - cutoff)
+        out.loc[season_df.index, "season_half"] = halves
+    return out
+
+
+def mode_label(*, season_reset: bool, mid_season: bool) -> str:
+    base = "season_reset" if season_reset else "continuous"
+    return f"{base}_mid_season" if mid_season else base
+
+
+def artifact_suffix(*, season_reset: bool, mid_season: bool) -> str:
+    parts: list[str] = []
+    if season_reset:
+        parts.append("season_reset")
+    if mid_season:
+        parts.append("mid_season")
+    return ("_" + "_".join(parts)) if parts else ""
 
 
 def walk_elo(
@@ -171,12 +204,18 @@ def evaluate_mode(
     test_seasons: set[str],
     *,
     season_reset: bool,
+    mid_season: bool,
     k: float | None,
     home_adv: float | None,
     edges: list[float],
 ) -> dict:
-    label = "season_reset" if season_reset else "continuous"
+    label = mode_label(season_reset=season_reset, mid_season=mid_season)
     print(f"\n===== Elo mode: {label} =====")
+    if mid_season:
+        print(
+            "Mid-season stress test: K/home-adv/calibrator from prior seasons; "
+            "ratings warm on H1 and keep updating; score only H2 of holdout."
+        )
 
     if k is not None and home_adv is not None:
         best_k, best_h = float(k), float(home_adv)
@@ -189,11 +228,19 @@ def evaluate_mode(
     walked, final_state = walk_elo(
         df, k=best_k, home_adv=best_h, season_reset=season_reset
     )
+    walked = add_season_half(walked)
     train = walked.loc[walked["season"].isin(train_seasons)].copy()
     test = walked.loc[walked["season"].isin(test_seasons)].copy()
+    if mid_season:
+        test = test.loc[test["season_half"] == 2].copy()
+        print(
+            f"Holdout H2 only: {len(test)} games "
+            f"(H1 warm-up excluded from metrics/ROI)"
+        )
     if test.empty:
-        raise SystemExit(f"No test rows for {TEST_SEASONS}")
+        raise SystemExit(f"No test rows for {TEST_SEASONS} (mid_season={mid_season})")
 
+    # Calibrator uses full prior seasons only — never the holdout H2 being scored.
     calibrator = fit_calibrator(train)
     train_s = score_calibrator(calibrator, train)
     test_s = score_calibrator(calibrator, test)
@@ -202,7 +249,8 @@ def evaluate_mode(
     summarize_probs("elo", train_s["fav_won"].astype(int), train_s["p_fav_model"])
     summarize_probs("market", train_s["fav_won"].astype(int), train_s["p_fav_mkt"])
 
-    print("\nProbability quality (favorite wins) — TEST:")
+    test_label = "TEST H2" if mid_season else "TEST"
+    print(f"\nProbability quality (favorite wins) — {test_label}:")
     summarize_probs("elo", test_s["fav_won"].astype(int), test_s["p_fav_model"])
     summarize_probs("market", test_s["fav_won"].astype(int), test_s["p_fav_mkt"])
 
@@ -210,8 +258,11 @@ def evaluate_mode(
     p = test_s["p_fav_model"]
     metrics = {
         "mode": label,
+        "season_reset": season_reset,
+        "mid_season": mid_season,
         "k": best_k,
         "home_adv": best_h,
+        "n_test": int(len(test)),
         "test_logloss": float(log_loss(y, p)),
         "test_auc": float(roc_auc_score(y, p)),
         "test_brier": float(brier_score_loss(y, p)),
@@ -221,7 +272,7 @@ def evaluate_mode(
     }
 
     rows = []
-    print("\nFlat 1u edge bets on TEST (Elo vs closing market):")
+    print(f"\nFlat 1u edge bets on {test_label} (Elo vs closing market):")
     print(f"  {'edge':>6}  {'bets':>5}  {'wins':>5}  {'hit%':>6}  {'P/L':>8}  {'ROI':>7}  fav/dc")
     for e in edges:
         scored = pick_bets(test_s, e)
@@ -248,14 +299,18 @@ def evaluate_mode(
         "best_h": best_h,
         "train": train,
         "test": test,
+        "season_reset": season_reset,
+        "mid_season": mid_season,
     }
 
 
-def save_artifacts(result: dict, df: pd.DataFrame, test_seasons: set[str], *, season_reset: bool) -> None:
+def save_artifacts(result: dict, df: pd.DataFrame, test_seasons: set[str]) -> None:
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     TABLES_DIR.mkdir(parents=True, exist_ok=True)
 
-    suffix = "_season_reset" if season_reset else ""
+    season_reset = bool(result["season_reset"])
+    mid_season = bool(result["mid_season"])
+    suffix = artifact_suffix(season_reset=season_reset, mid_season=mid_season)
     calibrator = result["calibrator"]
     final_state: EloState = result["final_state"]
     walked = result["walked"]
@@ -269,6 +324,7 @@ def save_artifacts(result: dict, df: pd.DataFrame, test_seasons: set[str], *, se
         "k": k,
         "home_adv": home_adv,
         "season_reset": season_reset,
+        "mid_season": mid_season,
         "initial_rating": final_state.initial,
         "test_seasons": sorted(test_seasons),
         "n_train": int(len(train)),
@@ -282,6 +338,7 @@ def save_artifacts(result: dict, df: pd.DataFrame, test_seasons: set[str], *, se
             "k": k,
             "home_adv": home_adv,
             "season_reset": season_reset,
+            "mid_season": mid_season,
             "ratings": dict(final_state.ratings),
         },
         MODELS_DIR / f"elo_state{suffix}.pkl",
@@ -299,6 +356,7 @@ def save_artifacts(result: dict, df: pd.DataFrame, test_seasons: set[str], *, se
         "game_id",
         "game_date",
         "season",
+        "season_half",
         "home_name",
         "away_name",
         "favorite_side",
@@ -314,6 +372,7 @@ def save_artifacts(result: dict, df: pd.DataFrame, test_seasons: set[str], *, se
         "fav_odds",
         "dc_odds",
     ]
+    # season_half always present after walk; keep for mid-season clarity
     test_s[keep].to_csv(
         TABLES_DIR / f"elo_predictions_holdout{suffix}.csv", index=False
     )
@@ -322,6 +381,7 @@ def save_artifacts(result: dict, df: pd.DataFrame, test_seasons: set[str], *, se
             "game_id",
             "game_date",
             "season",
+            "season_half",
             "home_id",
             "away_id",
             "home_name",
@@ -364,6 +424,15 @@ def main() -> None:
         help="Reset all ratings to 1500 at each Season boundary.",
     )
     p.add_argument(
+        "--mid-season",
+        action="store_true",
+        help=(
+            "Within-season stress test: warm Elo on first half of each holdout "
+            "season, keep updating, score only the second half. "
+            "K / home-adv / calibrator still fit on prior seasons only."
+        ),
+    )
+    p.add_argument(
         "--compare-reset",
         action="store_true",
         help="Run continuous and season-reset Elo, print a side-by-side summary.",
@@ -390,6 +459,8 @@ def main() -> None:
         f"{sorted(train_seasons)[0]} … {sorted(train_seasons)[-1]}"
     )
     print(f"Test seasons: {sorted(test_seasons)}")
+    if args.mid_season:
+        print("Eval slice: second half of each test season only")
 
     modes = [False, True] if args.compare_reset else [args.season_reset]
     results = []
@@ -399,23 +470,31 @@ def main() -> None:
             train_seasons,
             test_seasons,
             season_reset=season_reset,
+            mid_season=args.mid_season,
             k=args.k,
             home_adv=args.home_adv,
             edges=edges,
         )
-        save_artifacts(result, df, test_seasons, season_reset=season_reset)
+        save_artifacts(result, df, test_seasons)
         results.append(result["metrics"])
 
     if len(results) > 1:
         cmp = pd.DataFrame(results)
-        cmp_path = TABLES_DIR / "elo_continuous_vs_season_reset.csv"
+        mid_tag = "_mid_season" if args.mid_season else ""
+        cmp_path = TABLES_DIR / f"elo_continuous_vs_season_reset{mid_tag}.csv"
         cmp.to_csv(cmp_path, index=False, float_format="%.6f")
-        print("\n===== Continuous vs season-reset (TEST) =====")
+        title = "Continuous vs season-reset"
+        if args.mid_season:
+            title += " (TEST H2)"
+        else:
+            title += " (TEST)"
+        print(f"\n===== {title} =====")
         show = cmp[
             [
                 "mode",
                 "k",
                 "home_adv",
+                "n_test",
                 "test_auc",
                 "test_logloss",
                 "test_brier",
@@ -428,9 +507,13 @@ def main() -> None:
         print(show.to_string(index=False))
         print(f"\nWrote {cmp_path}")
 
-        cont = cmp.loc[cmp["mode"] == "continuous"].iloc[0]
-        reset = cmp.loc[cmp["mode"] == "season_reset"].iloc[0]
-        better = "season_reset" if reset["test_logloss"] < cont["test_logloss"] else "continuous"
+        cont = cmp.loc[cmp["mode"].str.startswith("continuous")].iloc[0]
+        reset = cmp.loc[cmp["mode"].str.startswith("season_reset")].iloc[0]
+        better = (
+            "season_reset"
+            if reset["test_logloss"] < cont["test_logloss"]
+            else "continuous"
+        )
         print(
             f"\nVerdict: {better} wins on holdout log-loss "
             f"({reset['test_logloss']:.4f} reset vs {cont['test_logloss']:.4f} continuous)."

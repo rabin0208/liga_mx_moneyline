@@ -3,8 +3,11 @@ Dixon-Coles bivariate Poisson model for soccer scores.
 
 Home goals ~ Poisson(λ), away goals ~ Poisson(μ), with low-score correlation ρ:
 
-  λ = exp(attack_home - defence_away + home_adv)
-  μ = exp(attack_away - defence_home)
+  λ = exp(intercept + attack_home - defence_away + home_adv)
+  μ = exp(intercept + attack_away - defence_home)
+
+`intercept` is log average scoring rate (away baseline). `home_adv` is only
+the extra home boost. Attack and defence are sum-to-zero for identifiability.
 
 Likelihood is time-weighted with exponential decay.
 """
@@ -17,9 +20,16 @@ from scipy.optimize import minimize
 from scipy.stats import poisson
 
 
-DEFAULT_XI = 0.0019  # ~1-year half-life: exp(-xi * 365) ≈ 0.5
+DEFAULT_XI = 0.0038  # ~6-month half-life: exp(-xi * 182) ≈ 0.5
 MAX_GOALS = 10
 RHO_BOUNDS = (-0.2, 0.2)
+# log(1.16) ≈ typical Liga MX away goals; used as init / legacy split
+DEFAULT_INTERCEPT = 0.15
+N_GLOBAL_PARAMS = 3  # intercept, home_adv, rho
+
+
+def n_free_params(n_teams: int) -> int:
+    return 2 * (n_teams - 1) + N_GLOBAL_PARAMS
 
 
 def dc_tau(hg: int, ag: int, lam: float, mu: float, rho: float) -> float:
@@ -43,12 +53,15 @@ def score_prob(hg: int, ag: int, lam: float, mu: float, rho: float) -> float:
 def match_lambdas(
     attack: np.ndarray,
     defence: np.ndarray,
+    intercept: float,
     home_adv: float,
     home_idx: int,
     away_idx: int,
 ) -> tuple[float, float]:
-    lam = float(np.exp(attack[home_idx] - defence[away_idx] + home_adv))
-    mu = float(np.exp(attack[away_idx] - defence[home_idx]))
+    lam = float(
+        np.exp(intercept + attack[home_idx] - defence[away_idx] + home_adv)
+    )
+    mu = float(np.exp(intercept + attack[away_idx] - defence[home_idx]))
     return lam, mu
 
 
@@ -75,6 +88,24 @@ def outcome_probs(
     return p_h / total, p_d / total, p_a / total
 
 
+def intercept_home_from_model(model) -> tuple[float, float]:
+    """Read intercept/home_adv, splitting legacy models that had no intercept."""
+    intercept = getattr(model, "intercept", None)
+    home_adv = float(model.home_adv)
+    if intercept is None or (float(intercept) == 0.0 and home_adv > 0.4):
+        intercept = DEFAULT_INTERCEPT
+        home_adv = max(home_adv - DEFAULT_INTERCEPT, 0.05)
+    return float(intercept), float(home_adv)
+
+
+def is_legacy_dc_model(model) -> bool:
+    """True if the pickle predates the league intercept parameter."""
+    intercept = getattr(model, "intercept", None)
+    if intercept is None:
+        return True
+    return float(intercept) == 0.0 and float(model.home_adv) > 0.4
+
+
 @dataclass
 class DixonColesModel:
     teams: list[str]
@@ -83,6 +114,7 @@ class DixonColesModel:
     home_adv: float
     rho: float
     xi: float = DEFAULT_XI
+    intercept: float = 0.0
 
     @property
     def team_to_idx(self) -> dict[str, int]:
@@ -93,21 +125,25 @@ class DixonColesModel:
         if home not in idx or away not in idx:
             # Unseen team → neutral priors
             return {"p_home": 1 / 3, "p_draw": 1 / 3, "p_away": 1 / 3, "lam": 1.2, "mu": 1.0}
+        intercept, home_adv = intercept_home_from_model(self)
         lam, mu = match_lambdas(
-            self.attack, self.defence, self.home_adv, idx[home], idx[away]
+            self.attack, self.defence, intercept, home_adv, idx[home], idx[away]
         )
         p_h, p_d, p_a = outcome_probs(lam, mu, self.rho)
         return {"p_home": p_h, "p_draw": p_d, "p_away": p_a, "lam": lam, "mu": mu}
 
 
-def _unpack_params(x: np.ndarray, n_teams: int) -> tuple[np.ndarray, np.ndarray, float, float]:
+def _unpack_params(
+    x: np.ndarray, n_teams: int
+) -> tuple[np.ndarray, np.ndarray, float, float, float]:
     """
     Parameter vector:
-      attack[0..n-2], defence[0..n-2], home_adv, rho
+      attack[0..n-2], defence[0..n-2], intercept, home_adv, rho
     with attack[n-1] = -sum(attack[:-1]), same for defence (identifiability).
     """
     a_free = x[: n_teams - 1]
     d_free = x[n_teams - 1 : 2 * (n_teams - 1)]
+    intercept = float(x[-3])
     home_adv = float(x[-2])
     rho = float(x[-1])
     attack = np.zeros(n_teams)
@@ -116,13 +152,17 @@ def _unpack_params(x: np.ndarray, n_teams: int) -> tuple[np.ndarray, np.ndarray,
     defence[:-1] = d_free
     attack[-1] = -a_free.sum()
     defence[-1] = -d_free.sum()
-    return attack, defence, home_adv, rho
+    return attack, defence, intercept, home_adv, rho
 
 
 def _pack_params(
-    attack: np.ndarray, defence: np.ndarray, home_adv: float, rho: float
+    attack: np.ndarray,
+    defence: np.ndarray,
+    intercept: float,
+    home_adv: float,
+    rho: float,
 ) -> np.ndarray:
-    return np.concatenate([attack[:-1], defence[:-1], [home_adv, rho]])
+    return np.concatenate([attack[:-1], defence[:-1], [intercept, home_adv, rho]])
 
 
 def _weighted_loglik(
@@ -134,12 +174,12 @@ def _weighted_loglik(
     weights: np.ndarray,
     n_teams: int,
 ) -> float:
-    attack, defence, home_adv, rho = _unpack_params(x, n_teams)
+    attack, defence, intercept, home_adv, rho = _unpack_params(x, n_teams)
     if not (RHO_BOUNDS[0] <= rho <= RHO_BOUNDS[1]):
         return 1e12
 
-    lam = np.exp(attack[home_idx] - defence[away_idx] + home_adv)
-    mu = np.exp(attack[away_idx] - defence[home_idx])
+    lam = np.exp(intercept + attack[home_idx] - defence[away_idx] + home_adv)
+    mu = np.exp(intercept + attack[away_idx] - defence[home_idx])
 
     # Vectorized DC tau for common cases
     tau = np.ones(len(hg), dtype=float)
@@ -201,12 +241,15 @@ def fit_dixon_coles(
     days_ago = ((max_date - dates) / np.timedelta64(1, "D")).astype(float)
     weights = np.exp(-xi * days_ago)
 
+    if x0 is not None and len(x0) != n_free_params(n):
+        x0 = None
     if x0 is None:
-        x0 = np.zeros(2 * (n - 1) + 2)
+        x0 = np.zeros(n_free_params(n))
+        x0[-3] = DEFAULT_INTERCEPT
         x0[-2] = 0.25  # home advantage in log-intensity space
         x0[-1] = -0.03  # typical small negative rho
 
-    bounds = [(-3.0, 3.0)] * (2 * (n - 1)) + [(-1.0, 1.5), RHO_BOUNDS]
+    bounds = [(-3.0, 3.0)] * (2 * (n - 1)) + [(-1.0, 1.5), (-1.0, 1.5), RHO_BOUNDS]
 
     res = minimize(
         _weighted_loglik,
@@ -216,7 +259,7 @@ def fit_dixon_coles(
         bounds=bounds,
         options={"maxiter": 300, "ftol": 1e-8},
     )
-    attack, defence, home_adv, rho = _unpack_params(res.x, n)
+    attack, defence, intercept, home_adv, rho = _unpack_params(res.x, n)
     return DixonColesModel(
         teams=teams,
         attack=attack,
@@ -224,6 +267,7 @@ def fit_dixon_coles(
         home_adv=float(home_adv),
         rho=float(rho),
         xi=xi,
+        intercept=float(intercept),
     )
 
 
@@ -246,4 +290,5 @@ def model_to_x0(model: DixonColesModel, teams: list[str]) -> np.ndarray:
     # re-center for constraint
     attack = attack - attack.mean()
     defence = defence - defence.mean()
-    return _pack_params(attack, defence, model.home_adv, model.rho)
+    intercept, home_adv = intercept_home_from_model(model)
+    return _pack_params(attack, defence, intercept, home_adv, model.rho)

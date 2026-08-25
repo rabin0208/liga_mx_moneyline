@@ -1,0 +1,23 @@
+{
+  "test_seasons": [
+    "2025/2026",
+    "2026/2027"
+  ],
+  "test_from": null,
+  "expanding": false,
+  "xi": 0.0038,
+  "sigma_att": 0.35,
+  "sigma_def": 0.35,
+  "n_posterior": 0,
+  "conf": 0.0,
+  "intercept_map": 0.14156309695610708,
+  "home_adv_map": 0.2772684256508079,
+  "rho_map": -0.07505355303743932,
+  "n_train": 4312,
+  "n_test": 372,
+  "test_logloss": 1.0013353903707312,
+  "market_logloss": 0.9867657844693817,
+  "test_acc": 0.5161290322580645,
+  "market_acc": 0.521505376344086,
+  "dc_xi_ref": 0.0038
+}

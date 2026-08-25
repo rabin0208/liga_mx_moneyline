@@ -1,0 +1,78 @@
+{
+  "target": "home_win",
+  "window": 5,
+  "typical_season_games": 17,
+  "features": [
+    "home_win_rate_l5",
+    "home_draw_rate_l5",
+    "home_goal_diff_l5",
+    "away_win_rate_l5",
+    "away_draw_rate_l5",
+    "away_goal_diff_l5",
+    "h2h_home_win_rate_l5",
+    "h2h_draw_rate_l5",
+    "h2h_home_goal_diff_l5",
+    "h2h_matches_available",
+    "home_sotd_win_rate",
+    "home_sotd_draw_rate",
+    "home_sotd_goal_diff",
+    "home_sotd_games",
+    "away_sotd_win_rate",
+    "away_sotd_draw_rate",
+    "away_sotd_goal_diff",
+    "away_sotd_games",
+    "home_season_progress",
+    "away_season_progress"
+  ],
+  "odds_in_model": false,
+  "bet_side": "home",
+  "bet_rule": "market_probability_edge = p_home_model - p_home_market_fair",
+  "edge_threshold": 0.05,
+  "validation_season": "2024/2025",
+  "test_season": "2025/2026",
+  "leakage_notes": [
+    "Form/H2H/season-to-date use only games strictly before kickoff.",
+    "Season-to-date resets at each Season boundary; no future results.",
+    "Season progress uses games already played / typical length, not the eventual season length.",
+    "Season label is never a model feature (avoids one-hot leakage).",
+    "Odds used only for edge/ROI after prediction."
+  ],
+  "validation_at_edge": {
+    "bets": 110,
+    "wins": 33,
+    "hit_rate": 0.3,
+    "profit": -5.929999999999998,
+    "roi": -0.05390909090909089
+  },
+  "holdout_at_edge": {
+    "bets": 113,
+    "wins": 34,
+    "hit_rate": 0.3008849557522124,
+    "profit": -9.26,
+    "roi": -0.08194690265486726
+  },
+  "holdout_probability_metrics": {
+    "model_auc": 0.6365026312046651,
+    "model_log_loss": 0.6647171512498817,
+    "model_brier": 0.23627237064899068,
+    "market_log_loss": 0.6177296962839516,
+    "market_brier": 0.21453115966997852
+  },
+  "production_training_seasons": [
+    "2012/2013",
+    "2013/2014",
+    "2014/2015",
+    "2015/2016",
+    "2016/2017",
+    "2017/2018",
+    "2018/2019",
+    "2019/2020",
+    "2020/2021",
+    "2021/2022",
+    "2022/2023",
+    "2023/2024",
+    "2024/2025",
+    "2025/2026"
+  ],
+  "warning": "Strategy was not profitable on the untouched holdout season at 5% probability edge. Do not treat as a validated edge."
+}
