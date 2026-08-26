@@ -209,29 +209,39 @@ def render_outcome(
     *,
     title: str,
     model_prob: object,
-    market_prob: object,
+    open_prob: object,
+    live_prob: object,
     edge: object,
-    odds: object,
+    open_odds: object,
+    live_odds: object,
 ) -> None:
     st.subheader(title)
     st.metric(
         "Model probability",
         percent(model_prob),
         delta=(
-            f"{float(edge):+.1%} vs market"
+            f"{float(edge):+.1%} vs live"
             if pd.notna(edge)
             else None
         ),
         delta_color="normal",
     )
     if pd.notna(model_prob):
-        st.progress(min(max(float(model_prob), 0.0), 1.0), text="Bayesian Dixon–Coles")
-        st.metric("Book fair probability", percent(market_prob))
-    if pd.notna(market_prob):
+        st.progress(min(max(float(model_prob), 0.0), 1.0), text=f"Model {percent(model_prob)}")
+    if pd.notna(open_prob):
         st.progress(
-            min(max(float(market_prob), 0.0), 1.0),
-            text=f"Book {decimal_odds(odds)}",
+            min(max(float(open_prob), 0.0), 1.0),
+            text=f"Open {percent(open_prob)} · {decimal_odds(open_odds)}",
         )
+    else:
+        st.caption("Open line not posted yet.")
+    if pd.notna(live_prob):
+        st.progress(
+            min(max(float(live_prob), 0.0), 1.0),
+            text=f"Live {percent(live_prob)} · {decimal_odds(live_odds)}",
+        )
+    elif pd.notna(model_prob):
+        st.caption("No live 1X2 on ESPN yet.")
 
 
 def render_slate(
@@ -315,15 +325,16 @@ def render_slate(
     st.subheader("Last slate" if is_past else "Upcoming matchups")
     if is_past:
         st.caption(
-            f"Showing {len(visible)} completed games. Odds are the last book "
-            "lines ESPN had, not a live betting slate."
+            f"Showing {len(visible)} completed games. Open and live are the last "
+            "ESPN lines, not a betting slate."
         )
     else:
         st.caption(
             f"Showing {len(visible)} of {len(games)} games · "
             f"flat 1u · sides [{sides_label}] · threshold {edge_threshold:.0%}. "
-            "Walk-forward 2018–2026 at 10% H/A is about −3% vs the close; "
-            "this is not Kelly sizing."
+            "Bars are model / ESPN open / ESPN live (de-vigged). "
+            "Recommendations use edge vs the live book, not the open. "
+            "Walk-forward 2018–2026 at 10% H/A is about −3% vs the close."
         )
 
     for _, game in visible.iterrows():
@@ -372,25 +383,31 @@ def render_slate(
                 render_outcome(
                     title=str(game["home_name"]),
                     model_prob=game["p_home"],
-                    market_prob=game.get("p_home_mkt"),
+                    open_prob=game.get("p_home_open"),
+                    live_prob=game.get("p_home_mkt"),
                     edge=game.get("edge_H"),
-                    odds=game.get("odds_H"),
+                    open_odds=game.get("odds_open_H"),
+                    live_odds=game.get("odds_H"),
                 )
             with draw_col:
                 render_outcome(
                     title="Draw",
                     model_prob=game["p_draw"],
-                    market_prob=game.get("p_draw_mkt"),
+                    open_prob=game.get("p_draw_open"),
+                    live_prob=game.get("p_draw_mkt"),
                     edge=game.get("edge_D"),
-                    odds=game.get("odds_D"),
+                    open_odds=game.get("odds_open_D"),
+                    live_odds=game.get("odds_D"),
                 )
             with away_col:
                 render_outcome(
                     title=str(game["away_name"]),
                     model_prob=game["p_away"],
-                    market_prob=game.get("p_away_mkt"),
+                    open_prob=game.get("p_away_open"),
+                    live_prob=game.get("p_away_mkt"),
                     edge=game.get("edge_A"),
-                    odds=game.get("odds_A"),
+                    open_odds=game.get("odds_open_A"),
+                    live_odds=game.get("odds_A"),
                 )
 
 
@@ -513,8 +530,8 @@ st.markdown(
     """
     <section class="bm-hero">
       <h1>Liga MX Moneyline Edge</h1>
-      <p>Bayesian Dixon–Coles 1X2 vs live ESPN book. Live model: all history through yesterday.
-      Walk-forward tab: one fit per Apertura/Clausura. Default recs: home &amp; away, 10% edge, flat 1u.</p>
+      <p>Bayesian Dixon–Coles 1X2 vs ESPN open and live. Live model: all history through yesterday.
+      Recommendations: edge vs the live book. Default: home &amp; away, 10% edge, flat 1u.</p>
     </section>
     """,
     unsafe_allow_html=True,
@@ -542,7 +559,7 @@ with st.sidebar:
         value=10,
         step=1,
         format="%d%%",
-        help="Model probability minus vig-free book (or closing AvgC* on the walk-forward tab).",
+        help="Model probability minus vig-free live ESPN 1X2 (or closing AvgC* on the walk-forward tab).",
     )
     edge_threshold = edge_percent / 100.0
     unit = st.number_input(

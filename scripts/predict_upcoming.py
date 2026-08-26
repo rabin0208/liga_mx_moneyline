@@ -54,6 +54,10 @@ LIVE_MODEL = MODELS_DIR / "bayesian_dc_model_live.pkl"
 ESPN_LEAGUE = "mex.1"
 ESPN_SCOREBOARD = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{ESPN_LEAGUE}/scoreboard"
 ESPN_HEADER = "https://site.web.api.espn.com/apis/v2/scoreboard/header"
+ESPN_CORE_ODDS = (
+    "https://sports.core.api.espn.com/v2/sports/soccer/leagues/"
+    f"{ESPN_LEAGUE}/events/{{eid}}/competitions/{{eid}}/odds"
+)
 DISPLAY_TZ = "America/Mexico_City"
 FIXTURES_CSV = PROJECT_ROOT / "data" / "upcoming_fixtures.csv"
 ODDS_CACHE_HOURS = 12
@@ -96,6 +100,8 @@ NAME_ALIASES = {
     "Mazatlán FC": "Mazatlan FC",
     "Santos": "Santos Laguna",
     "Morelia": "Monarcas",
+    "Atlante FC": "Atlante",
+    "CF Atlante": "Atlante",
 }
 
 
@@ -142,6 +148,14 @@ def american_to_decimal(odds) -> float:
     return float("nan")
 
 
+def _finite_odds(value) -> bool:
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return False
+    return bool(np.isfinite(x) and x > 1.0)
+
+
 def _ml_american(block: dict | None, side: str) -> str | None:
     if not block:
         return None
@@ -151,6 +165,13 @@ def _ml_american(block: dict | None, side: str) -> str | None:
         if odds:
             return str(odds)
     return None
+
+
+def _ml_snap(block: dict | None, side: str, snap: str) -> str | None:
+    if not block:
+        return None
+    odds = ((block.get(side) or {}).get(snap) or {}).get("odds")
+    return str(odds) if odds is not None else None
 
 
 def _espn_header_events(dates: list[str]) -> list[dict]:
@@ -227,7 +248,131 @@ def _header_ml(odds: dict, side: str) -> str | None:
         return str(nested)
     ml = odds.get("moneyline") or {}
     close = ((ml.get(side) or {}).get("close") or {}).get("odds")
-    return str(close) if close is not None else None
+    if close is not None:
+        return str(close)
+    open_ = ((ml.get(side) or {}).get("open") or {}).get("odds")
+    return str(open_) if open_ is not None else None
+
+
+def _header_open_ml(odds: dict, side: str) -> str | None:
+    if not odds:
+        return None
+    return _ml_snap(odds.get("moneyline") or {}, side, "open")
+
+
+def _price_decimal(price) -> float:
+    if not isinstance(price, dict):
+        return float("nan")
+    if price.get("decimal") is not None:
+        try:
+            return float(price["decimal"])
+        except (TypeError, ValueError):
+            return float("nan")
+    if price.get("american") is not None:
+        return american_to_decimal(price["american"])
+    return float("nan")
+
+
+def _block_ml_decimal(block: dict | None, snap: str) -> float:
+    if not isinstance(block, dict):
+        return float("nan")
+    nested = block.get(snap)
+    if isinstance(nested, dict):
+        ml = nested.get("moneyLine")
+        if isinstance(ml, dict):
+            return _price_decimal(ml)
+        if ml is not None:
+            return american_to_decimal(ml)
+    if snap in {"close", "current"} and block.get("moneyLine") is not None:
+        ml = block.get("moneyLine")
+        if isinstance(ml, dict):
+            return _price_decimal(ml)
+        return american_to_decimal(ml)
+    return float("nan")
+
+
+def _parse_core_item(item: dict) -> dict | None:
+    name = str((item.get("provider") or {}).get("name") or "")
+    if "live" in name.lower():
+        return None
+    home = item.get("homeTeamOdds") or {}
+    away = item.get("awayTeamOdds") or {}
+    top_open = item.get("open") or {}
+    top_live = item.get("current") or item.get("close") or {}
+    oh = _block_ml_decimal(home, "open")
+    od = _price_decimal(top_open.get("draw") or {})
+    oa = _block_ml_decimal(away, "open")
+    lh = _block_ml_decimal(home, "current")
+    if not _finite_odds(lh):
+        lh = _block_ml_decimal(home, "close")
+    ld = _price_decimal(top_live.get("draw") or {})
+    if not _finite_odds(ld):
+        ld = _block_ml_decimal(item.get("drawOdds") or {}, "close")
+    la = _block_ml_decimal(away, "current")
+    if not _finite_odds(la):
+        la = _block_ml_decimal(away, "close")
+    if not any(_finite_odds(x) for x in (oh, od, oa, lh, ld, la)):
+        return None
+    return {
+        "book": name or None,
+        "odds_open_H": oh,
+        "odds_open_D": od,
+        "odds_open_A": oa,
+        "odds_H": lh,
+        "odds_D": ld,
+        "odds_A": la,
+    }
+
+
+def fetch_core_open_live(espn_id: str) -> dict | None:
+    url = ESPN_CORE_ODDS.format(eid=espn_id)
+    r = requests.get(url, headers=ESPN_UA, timeout=20)
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    parsed: list[dict] = []
+    for item in r.json().get("items") or []:
+        row = _parse_core_item(item)
+        if row is not None:
+            parsed.append(row)
+    if not parsed:
+        return None
+    parsed.sort(key=lambda t: 0 if str(t.get("book") or "").lower() == "espn bet" else 1)
+    return parsed[0]
+
+
+def fill_open_odds(slate: pd.DataFrame) -> pd.DataFrame:
+    """Fill missing opening 1X2 from the ESPN core odds API."""
+    out = slate.copy()
+    for col in ("odds_open_H", "odds_open_D", "odds_open_A"):
+        if col not in out.columns:
+            out[col] = np.nan
+    if "espn_id" not in out.columns or out.empty:
+        return out
+    missing = []
+    for idx, row in out.iterrows():
+        if not all(_finite_odds(row.get(c)) for c in ("odds_open_H", "odds_open_D", "odds_open_A")):
+            missing.append(idx)
+    for idx in missing:
+        eid = out.at[idx, "espn_id"]
+        if eid is None or (isinstance(eid, float) and np.isnan(eid)):
+            continue
+        try:
+            extra = fetch_core_open_live(str(eid).replace(".0", ""))
+        except requests.RequestException:
+            extra = None
+        if not extra:
+            continue
+        for col in ("odds_open_H", "odds_open_D", "odds_open_A"):
+            if not _finite_odds(out.at[idx, col]) and _finite_odds(extra.get(col)):
+                out.at[idx, col] = extra[col]
+        for col in ("odds_H", "odds_D", "odds_A"):
+            if col in out.columns and not _finite_odds(out.at[idx, col]) and _finite_odds(extra.get(col)):
+                out.at[idx, col] = extra[col]
+        if not out.at[idx, "book"] and extra.get("book"):
+            out.at[idx, "book"] = extra["book"]
+        time.sleep(0.05)
+    return out
 
 
 def _parse_event(event: dict) -> dict | None:
@@ -247,6 +392,9 @@ def _parse_event(event: dict) -> dict | None:
         ah = _header_ml(odds_obj, "home")
         ad = _header_ml(odds_obj, "draw")
         aa = _header_ml(odds_obj, "away")
+        oh = _header_open_ml(odds_obj, "home")
+        od = _header_open_ml(odds_obj, "draw")
+        oa = _header_open_ml(odds_obj, "away")
         book = (odds_obj.get("provider") or {}).get("name")
     else:
         comps = (event.get("competitions") or [{}])[0]
@@ -254,6 +402,7 @@ def _parse_event(event: dict) -> dict | None:
         status_type = (event.get("status") or {}).get("type") or {}
         book = None
         ah = ad = aa = None
+        oh = od = oa = None
         odds_list = comps.get("odds") or []
         if odds_list:
             o0 = odds_list[0]
@@ -262,6 +411,9 @@ def _parse_event(event: dict) -> dict | None:
             ah = _ml_american(ml, "home")
             ad = _ml_american(ml, "draw")
             aa = _ml_american(ml, "away")
+            oh = _ml_snap(ml, "home", "open")
+            od = _ml_snap(ml, "draw", "open")
+            oa = _ml_snap(ml, "away", "open")
             if ah is None and o0.get("homeTeamOdds"):
                 ah = (o0.get("homeTeamOdds") or {}).get("moneyLine")
             if aa is None and o0.get("awayTeamOdds"):
@@ -290,6 +442,9 @@ def _parse_event(event: dict) -> dict | None:
         "odds_H": american_to_decimal(ah),
         "odds_D": american_to_decimal(ad),
         "odds_A": american_to_decimal(aa),
+        "odds_open_H": american_to_decimal(oh),
+        "odds_open_D": american_to_decimal(od),
+        "odds_open_A": american_to_decimal(oa),
     }
 
 
@@ -324,7 +479,7 @@ def fetch_espn_slate(dates: list[str]) -> pd.DataFrame:
         rows.append(row)
     if not rows:
         raise RuntimeError(f"No ESPN Liga MX events for dates {dates}")
-    return pd.DataFrame(rows).sort_values("kickoff_utc").reset_index(drop=True)
+    return fill_open_odds(pd.DataFrame(rows).sort_values("kickoff_utc").reset_index(drop=True))
 
 
 def _cache_age_hours(path: Path) -> float | None:
@@ -346,6 +501,9 @@ def write_fixtures_cache(slate: pd.DataFrame, path: Path = FIXTURES_CSV) -> None
         "odds_H",
         "odds_D",
         "odds_A",
+        "odds_open_H",
+        "odds_open_D",
+        "odds_open_A",
     ]
     out = slate.copy()
     for c in cols:
@@ -360,6 +518,8 @@ def load_cached_upcoming(path: Path = FIXTURES_CSV, *, max_age_hours: float = OD
     if age is None or age > max_age_hours:
         return None
     df = load_fixtures_csv(path)
+    if not {"odds_open_H", "odds_open_D", "odds_open_A"}.issubset(df.columns):
+        return None
     live = df.loc[~df["completed"].astype(bool)]
     if live.empty:
         return None
@@ -504,12 +664,24 @@ def score_slate(
         p_h, p_d, p_a = pred["p_home"], pred["p_draw"], pred["p_away"]
         fair_h, fair_d, fair_a = 1.0 / p_h, 1.0 / p_d, 1.0 / p_a
 
-        oh, od, oa = float(row["odds_H"]), float(row["odds_D"]), float(row["odds_A"])
-        has_book = np.isfinite(oh) and np.isfinite(od) and np.isfinite(oa)
+        def _odds(key: str) -> float:
+            try:
+                return float(row[key])
+            except (KeyError, TypeError, ValueError):
+                return float("nan")
+
+        oh, od, oa = _odds("odds_H"), _odds("odds_D"), _odds("odds_A")
+        ooh, ood, ooa = _odds("odds_open_H"), _odds("odds_open_D"), _odds("odds_open_A")
+        has_book = _finite_odds(oh) and _finite_odds(od) and _finite_odds(oa)
+        has_open = _finite_odds(ooh) and _finite_odds(ood) and _finite_odds(ooa)
         if has_book:
             mkt = remove_vig_3way(implied_prob(oh), implied_prob(od), implied_prob(oa))
         else:
             mkt = (float("nan"), float("nan"), float("nan"))
+        if has_open:
+            opened = remove_vig_3way(implied_prob(ooh), implied_prob(ood), implied_prob(ooa))
+        else:
+            opened = (float("nan"), float("nan"), float("nan"))
 
         edges = {
             "H": p_h - mkt[0],
@@ -551,12 +723,21 @@ def score_slate(
                 "odds_H": oh,
                 "odds_D": od,
                 "odds_A": oa,
+                "odds_open_H": ooh,
+                "odds_open_D": ood,
+                "odds_open_A": ooa,
                 "p_home_mkt": mkt[0],
                 "p_draw_mkt": mkt[1],
                 "p_away_mkt": mkt[2],
+                "p_home_open": opened[0],
+                "p_draw_open": opened[1],
+                "p_away_open": opened[2],
                 "edge_H": edges["H"],
                 "edge_D": edges["D"],
                 "edge_A": edges["A"],
+                "edge_open_H": p_h - opened[0],
+                "edge_open_D": p_d - opened[1],
+                "edge_open_A": p_a - opened[2],
                 "best_side": best,
                 "best_edge": best_edge,
                 "model_pick": model_pick,
@@ -705,7 +886,7 @@ def _fmt_pct(x: float) -> str:
 
 def print_table(df: pd.DataFrame) -> None:
     print("\nUpcoming Liga MX — Bayesian Dixon–Coles fair 1X2")
-    print("P = model probability. Fair = 1/P (no vig). Book = ESPN 1X2 when present.")
+    print("P = model. Open / Live = vig-free ESPN 1X2. Edge = P_model − P_live.")
     print("Edge = P_model − P_fair_book. Large edges were overconfident on 2025; shop, don't auto-bet.\n")
     header = (
         f"{'Kickoff CT':<16} {'Match':<42} "
