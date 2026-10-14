@@ -48,13 +48,20 @@ _load_scripts_module("model_utils")
 _load_scripts_module("fit_bayesian_dc")
 _load_scripts_module("form_utils")
 _load_scripts_module("predict_upcoming")
+_load_scripts_module("eval_open_close")
 
+from eval_open_close import attach_open_close  # noqa: E402
 from fit_bayesian_dc import pick_bets  # noqa: E402
+from odds_utils import fair_probs_from_odds  # noqa: E402
 from predict_upcoming import (  # noqa: E402
     load_scored_slate,
     pick_upcoming_bets,
     upcoming_only,
 )
+
+ESPN_OPEN_CLOSE = PROJECT_ROOT / "data" / "espn_open_close.csv"
+OPEN_ODDS_COL = {"H": "OpenH", "D": "OpenD", "A": "OpenA"}
+ESPN_CLOSE_ODDS_COL = {"H": "CloseH", "D": "CloseD", "A": "CloseA"}
 
 st.set_page_config(
     page_title="Liga MX Moneyline Edge",
@@ -180,7 +187,25 @@ def load_walkforward() -> pd.DataFrame:
     missing = [c for c in needed if c not in df.columns]
     if missing:
         raise ValueError(f"{WALKFORWARD_PATH.name} missing {missing}")
-    return df.dropna(subset=needed).reset_index(drop=True)
+    df = df.dropna(subset=needed).reset_index(drop=True)
+    return attach_open_close(df)
+
+
+def apply_book_edges(df: pd.DataFrame, odds_h: str, odds_d: str, odds_a: str) -> pd.DataFrame:
+    """Replace AvgC fair probs / edges with de-vigged prices from another 1X2 book."""
+    out = df.dropna(subset=[odds_h, odds_d, odds_a]).copy()
+    fair = [
+        fair_probs_from_odds(h, d, a)
+        for h, d, a in zip(out[odds_h], out[odds_d], out[odds_a])
+    ]
+    out["p_home_fair"] = [t[0] for t in fair]
+    out["p_draw_fair"] = [t[1] for t in fair]
+    out["p_away_fair"] = [t[2] for t in fair]
+    out = out.dropna(subset=["p_home_fair", "p_draw_fair", "p_away_fair"])
+    out["edge_H"] = out["p_home_model"] - out["p_home_fair"]
+    out["edge_D"] = out["p_draw_model"] - out["p_draw_fair"]
+    out["edge_A"] = out["p_away_model"] - out["p_away_fair"]
+    return out
 
 
 def percent(value: object) -> str:
@@ -444,12 +469,40 @@ def tournament_roi_table(bets: pd.DataFrame) -> pd.DataFrame:
 
 def render_roi_tab(*, edge_threshold: float, sides: list[str], tournament: str) -> None:
     st.subheader("Walk-forward flat 1u ROI")
-    st.caption(
-        f"Each tournament is scored with a MAP fit on **all history before it** "
-        f"(not previous-tournament-only). Same rule as the slate: best side among "
-        f"[{','.join(sides)}] when model − fair close ≥ {edge_threshold:.0%}, "
-        "payout at AvgC*. Pooled 2018–2026 at 10% H/A is about −3%."
+    market = st.radio(
+        "Edge vs",
+        options=["Closing AvgC*", "ESPN close", "Opening (ESPN/DK)"],
+        index=2,
+        horizontal=True,
+        help=(
+            "Closing AvgC* uses football-data (full 2018–2026). "
+            "ESPN close and Opening use ESPN BET / DraftKings 1X2 from ESPN’s "
+            "core odds API (Jul 2025 onward) and pay at those prices."
+        ),
     )
+    use_open = market.startswith("Opening")
+    use_espn_close = market.startswith("ESPN close")
+    if use_open:
+        st.caption(
+            f"Each tournament is scored with a MAP fit on **all history before it**. "
+            f"Best side among [{','.join(sides)}] when model − fair **opening** ≥ "
+            f"{edge_threshold:.0%}, payout at ESPN BET / DraftKings open. "
+            "Coverage is Apertura 2025 onward."
+        )
+    elif use_espn_close:
+        st.caption(
+            f"Each tournament is scored with a MAP fit on **all history before it**. "
+            f"Best side among [{','.join(sides)}] when model − fair **ESPN close** ≥ "
+            f"{edge_threshold:.0%}, payout at ESPN BET / DraftKings close. "
+            "Coverage is Apertura 2025 onward."
+        )
+    else:
+        st.caption(
+            f"Each tournament is scored with a MAP fit on **all history before it** "
+            f"(not previous-tournament-only). Same rule as the slate: best side among "
+            f"[{','.join(sides)}] when model − fair close ≥ {edge_threshold:.0%}, "
+            "payout at AvgC*."
+        )
 
     with st.spinner("Loading walk-forward predictions…"):
         try:
@@ -461,7 +514,35 @@ def render_roi_tab(*, edge_threshold: float, sides: list[str], tournament: str) 
     if tournament != "All":
         games = games.loc[games["tournament"] == tournament].copy()
 
-    scored = pick_bets(games, edge_threshold, sides, conf=0.0)
+    odds_col = None
+    if use_open or use_espn_close:
+        if not ESPN_OPEN_CLOSE.is_file() or "OpenH" not in games.columns:
+            st.warning(
+                "No ESPN open/close cache. Run "
+                "`python scripts/eval_open_close.py "
+                "--predictions results/tables/bayesian_dc_predictions_walkforward.csv "
+                "--since 2025-07-01`."
+            )
+            return
+        if use_open:
+            games = apply_book_edges(games, "OpenH", "OpenD", "OpenA")
+            odds_col = OPEN_ODDS_COL
+            missing_msg = (
+                "No games in this filter have ESPN opening 1X2. "
+                "Coverage starts Apertura 2025."
+            )
+        else:
+            games = apply_book_edges(games, "CloseH", "CloseD", "CloseA")
+            odds_col = ESPN_CLOSE_ODDS_COL
+            missing_msg = (
+                "No games in this filter have ESPN closing 1X2. "
+                "Coverage starts Apertura 2025."
+            )
+        if games.empty:
+            st.info(missing_msg)
+            return
+
+    scored = pick_bets(games, edge_threshold, sides, conf=0.0, odds_col=odds_col)
     bets = scored.dropna(subset=["bet_side"]).copy()
     by_tourn = tournament_roi_table(bets)
 
@@ -531,7 +612,7 @@ st.markdown(
     <section class="bm-hero">
       <h1>Liga MX Moneyline Edge</h1>
       <p>Bayesian Dixon–Coles 1X2 vs ESPN open and live. Live model: all history through yesterday.
-      Recommendations: edge vs the live book. Default: home &amp; away, 10% edge, flat 1u.</p>
+      Recommendations: edge vs the live book. Walk-forward ROI can use AvgC close or ESPN open/close. Default: home &amp; away, 10% edge, flat 1u.</p>
     </section>
     """,
     unsafe_allow_html=True,
@@ -559,7 +640,7 @@ with st.sidebar:
         value=10,
         step=1,
         format="%d%%",
-        help="Model probability minus vig-free live ESPN 1X2 (or closing AvgC* on the walk-forward tab).",
+        help="Model probability minus vig-free live ESPN 1X2 on the slate, or closing AvgC* / ESPN open-close on the walk-forward tab.",
     )
     edge_threshold = edge_percent / 100.0
     unit = st.number_input(

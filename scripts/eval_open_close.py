@@ -8,6 +8,7 @@ for Liga MX, which we join onto an existing predictions table.
 Usage:
   python scripts/eval_open_close.py
   python scripts/eval_open_close.py --predictions results/tables/bayesian_dc_predictions_holdout_2026.csv
+  python scripts/eval_open_close.py --predictions results/tables/bayesian_dc_predictions_walkforward.csv --since 2025-07-01
   python scripts/eval_open_close.py --refresh
 """
 from __future__ import annotations
@@ -357,6 +358,57 @@ def join_predictions(pred: pd.DataFrame, espn: pd.DataFrame, known: set[str]) ->
     return merged
 
 
+def attach_open_close(pred: pd.DataFrame, cache: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Left-join ESPN BET / DraftKings open+close 1X2 onto a predictions table.
+
+    ESPN 1X2 coverage starts around July 2025; earlier games stay missing.
+    """
+    out = pred.copy()
+    out["game_date"] = pd.to_datetime(out["game_date"])
+    extra = ["OpenH", "OpenD", "OpenA", "CloseH", "CloseD", "CloseA", "espn_book"]
+    espn = load_odds_cache(ODDS_CACHE) if cache is None else cache
+    if espn.empty or "game_id" not in out.columns:
+        for col in extra:
+            if col not in out.columns:
+                out[col] = pd.NA
+        return out
+    cutoff = pd.Timestamp("2025-07-01")
+    recent = out.loc[out["game_date"] >= cutoff].copy()
+    older = out.loc[out["game_date"] < cutoff].copy()
+    if recent.empty:
+        for col in extra:
+            out[col] = pd.NA
+        return out
+    known = set(recent["home_name"].astype(str)) | set(recent["away_name"].astype(str))
+    joined = join_predictions(recent, espn, known)
+    keep = ["game_id", "open_H", "open_D", "open_A", "close_H", "close_D", "close_A"]
+    if "book" in joined.columns:
+        keep.append("book")
+    have = [c for c in keep if c in joined.columns]
+    slim = joined[have].drop_duplicates("game_id")
+    rename = {
+        "open_H": "OpenH",
+        "open_D": "OpenD",
+        "open_A": "OpenA",
+        "close_H": "CloseH",
+        "close_D": "CloseD",
+        "close_A": "CloseA",
+        "book": "espn_book",
+    }
+    slim = slim.rename(columns={k: v for k, v in rename.items() if k in slim.columns})
+    slim_cols = [c for c in slim.columns if c != "game_id"]
+    drop_existing = [c for c in slim_cols if c in recent.columns]
+    if drop_existing:
+        recent = recent.drop(columns=drop_existing)
+    recent = recent.merge(slim, on="game_id", how="left")
+    for col in extra:
+        if col not in recent.columns:
+            recent[col] = pd.NA
+        if col not in older.columns:
+            older[col] = pd.NA
+    return pd.concat([older, recent], ignore_index=True)
+
+
 def pick_from(
     df: pd.DataFrame,
     fair: dict[str, str],
@@ -516,6 +568,12 @@ def main() -> None:
     p.add_argument("--refresh", action="store_true", help="Re-fetch ESPN odds.")
     p.add_argument("--pause", type=float, default=0.08, help="Seconds between odds calls.")
     p.add_argument("--edge", type=str, default="0,0.05,0.10")
+    p.add_argument(
+        "--since",
+        type=str,
+        default="",
+        help="Only fetch/join games on or after this date (YYYY-MM-DD). ESPN 1X2 starts ~Jul 2025.",
+    )
     args = p.parse_args()
 
     pred_path = Path(args.predictions)
@@ -547,6 +605,11 @@ def main() -> None:
             raise SystemExit("Predictions need game_id to join closing AvgC odds.")
         pred = pred.merge(matches, on="game_id", how="left")
     pred = pred.dropna(subset=needed + ["AvgCH", "AvgCD", "AvgCA"]).reset_index(drop=True)
+    if args.since:
+        since = pd.Timestamp(args.since)
+        pred = pred.loc[pred["game_date"] >= since].reset_index(drop=True)
+        if pred.empty:
+            raise SystemExit(f"No predictions on or after {args.since}.")
     known = set(pred["home_name"]) | set(pred["away_name"])
     start = pred["game_date"].min() - timedelta(days=1)
     end = pred["game_date"].max() + timedelta(days=1)

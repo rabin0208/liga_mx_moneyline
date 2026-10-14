@@ -5,17 +5,19 @@ ML project to estimate Liga MX match probabilities from recent form, compare the
 Uses [football-data.co.uk](https://www.football-data.co.uk/mexico.php) Mexico CSV (`data/MEX.csv`).
 
 **Results & how to use the models in practice:** see [FINDINGS.md](FINDINGS.md)
-(Bayesian Dixon–Coles with league intercept; 10% edge is +20% on the first
+(Bayesian Dixon–Coles with league intercept; 10% edge is +12% on the first
 holdout and ~0% walk-forward 2018–2026 — not a found edge at the close).
 
 ## Live app
 
 Same idea as a through-yesterday refit (all completed games), then score the
 next ESPN Liga MX slate. The **Walk-forward ROI** tab uses one MAP fit per
-Apertura/Clausura on history before that tournament.
+Apertura/Clausura on history before that tournament, with a toggle for football-data
+closing AvgC* vs ESPN BET / DraftKings open and close (Jul 2025 onward).
 
 ```bash
 python scripts/eval_tournament_dc.py --predictions-only   # once, for the ROI tab
+python scripts/eval_open_close.py --predictions results/tables/bayesian_dc_predictions_walkforward.csv --since 2025-07-01
 python scripts/predict_upcoming.py --refit --map-only     # live model + slate
 streamlit run app.py
 ```

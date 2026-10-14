@@ -2,7 +2,7 @@
 
 What worked, what didn’t, and how to use the model in practice (soft books +
 promos). Odds throughout are football-data closing averages `AvgCH` / `AvgCD` /
-`AvgCA` unless noted. Data refreshed through **2026-08-24**.
+`AvgCA` unless noted. Data refreshed through **2026-09-16**.
 
 Bayesian Dixon–Coles was ported from `Documents/semantic/mls_moneyline`,
 including the **league intercept** spec that produced the MLS 10% edge result.
@@ -15,14 +15,14 @@ including the **league intercept** spec that produced the MLS 10% edge result.
    disagree, the close has been more accurate.
 2. **Best model so far = Bayesian Dixon–Coles with league intercept**
    (hierarchical Poisson, MAP). Mean 1X2 now matches the close; log-loss is
-   still worse (1.001 vs 0.987 on the first holdout).
+   still worse (1.003 vs 0.983 on the first holdout).
 3. **The MLS 10% edge rule does not replicate as a long-run edge here.**
    Same rule (MAP, best of H/A if `P_model − P_fair ≥ 0.10`, skip draws):
-   first holdout **+20.5% / 75 bets**, calendar 2026 **−6.2% / 57 bets**,
-   walk-forward 2018–2026 **+0.7% / 591 bets**. Same pattern as MLS 2025 vs 2026.
+   first holdout **+12.3% / 82 bets**, calendar 2026 **−18.1% / 70 bets**,
+   walk-forward 2018–2026 **+0.3% / 600 bets**. Same pattern as MLS 2025 vs 2026.
 4. **Do not** treat the first-holdout plus as a found edge. Walk-forward at
    the same 10% rule is +80% in Apertura 2025, −1.5% in Clausura 2026, and
-   −6.2% on calendar 2026.
+   −18.1% on calendar 2026.
 5. **Do not** train on the previous tournament only, and **do not** bet
    draws-only at 5% edge. Both are worse.
 
@@ -31,20 +31,20 @@ including the **league intercept** spec that produced the MLS 10% edge result.
 ## Model ladder
 
 First holdout: train on **all seasons from 2012/2013 through 2024/2025**
-(4,312 games), test **2025/2026 + 2026/2027** (372 matches, 12 Jul 2025 –
-18 Aug 2026). Time decay (`xi=0.0038`, ~6-month half-life) downweights old
+(4,312 games), test **2025/2026 + 2026/2027** (406 matches, 12 Jul 2025 –
+16 Sep 2026). Time decay (`xi=0.0038`, ~6-month half-life) downweights old
 games without dropping them. Numbers below are **MAP + league intercept**.
 
 | Price | 1X2 accuracy | 1X2 log-loss |
 |-------|--------------|--------------|
-| Closing market (de-vigged) | **52.2%** | **0.987** |
-| Bayesian Dixon–Coles (intercept, MAP) | 51.6% | 1.001 |
+| Closing market (de-vigged) | **52.5%** | **0.983** |
+| Bayesian Dixon–Coles (intercept, MAP) | 51.7% | 1.003 |
 
-Mean P(H/D/A): model **0.453 / 0.255 / 0.292** vs market **0.447 / 0.247 / 0.306**.
+Mean P(H/D/A): model **0.454 / 0.254 / 0.292** vs market **0.446 / 0.247 / 0.307**.
 Mean λ/μ = 1.58 / 1.19. MAP: γ = **0.142**, δ = **0.277**,
-ρ = −0.075. `model_pick` 252 H / 120 A vs market 241 / 130.
+ρ = −0.075. `model_pick` 279 H / 127 A vs market 262 / 143.
 
-Edge=0 (best of H/D/A every game at AvgC): **+0.1%** ROI (+0.5u / 372).
+Edge=0 (best of H/D/A every game at AvgC): **−3.7%** ROI (−15.2u / 406).
 
 Artifacts:
 
@@ -91,22 +91,22 @@ Pre-intercept pickles (`intercept = 0`, `home_adv ≳ 0.4`) are legacy; refit.
 MLS 2025 holdout: MAP intercept model, best of H/A, edge ≥ 0.10 → **+11.9% /
 117 bets** (H/D/A +8.5% / 117). 2026 YTD there was **−6.9%**. Same rule here.
 
-First holdout (372 games, train through 2024/2025):
+First holdout (406 games, train through 2024/2025):
 
 | Filter | n | Hit | ROI @ AvgC* |
 |--------|---|-----|-------------|
-| H/D/A edge ≥ 0 | 372 | 35.5% | **+0.1%** |
-| H/D/A edge ≥ 0.05 | 196 | 36.2% | +3.9% |
-| H/D/A edge ≥ 0.10 | 79 | 41.8% | **+14.4%** |
-| **H,A edge ≥ 0.10** | **75** | **44.0%** | **+20.5%** |
+| H/D/A edge ≥ 0 | 406 | 34.7% | **−3.7%** |
+| H/D/A edge ≥ 0.05 | 216 | 34.7% | −2.8% |
+| H/D/A edge ≥ 0.10 | 86 | 39.5% | **+7.1%** |
+| **H,A edge ≥ 0.10** | **82** | **41.5%** | **+12.3%** |
 
-Calendar **2026 YTD** (train through 2025-12-31, 203 games through 18 Aug):
+Calendar **2026 YTD** (train through 2025-12-31, 237 games through 16 Sep):
 
 | Filter | n | Hit | ROI |
 |--------|---|-----|-----|
-| H/D/A edge ≥ 0 | 203 | 34.5% | **−14.6%** |
-| H/D/A edge ≥ 0.10 | 57 | 36.8% | **−6.2%** |
-| H,A edge ≥ 0.10 | 57 | 36.8% | **−6.2%** |
+| H/D/A edge ≥ 0 | 237 | 33.8% | **−18.6%** |
+| H/D/A edge ≥ 0.10 | 70 | 32.9% | **−18.1%** |
+| H,A edge ≥ 0.10 | 70 | 32.9% | **−18.1%** |
 
 **Expanding matchday refits** (MAP, history strictly before each of 66
 2026 dates, 12.9s). Log-loss **1.036 vs 1.011** — same as the static fit.
@@ -136,12 +136,12 @@ Walk-forward all-history MAP, 17 tournaments 2018–2026, edge ≥ 0.10:
 
 | Sides | Bets | P/L | ROI | Positive tournaments |
 |-------|------|-----|-----|----------------------|
-| H,A | 591 | +4.3u | **+0.7%** | 8 / 17 |
-| H/D/A | 592 | +3.3u | **+0.6%** | 8 / 17 |
+| H,A | 600 | +1.7u | **+0.3%** | 8 / 17 |
+| H/D/A | 601 | +0.7u | **+0.1%** | 8 / 17 |
 
-First-holdout +20% is still not a found edge: Apertura 2025 walk-forward
+First-holdout +12% is still not a found edge: Apertura 2025 walk-forward
 is +80% / 20 bets against Clausura 2026 **−1.5% / 47** and calendar 2026
-**−6.2%**. Overconfidence on selected bets remains; do not Kelly on raw
+**−18.1%**. Overconfidence on selected bets remains; do not Kelly on raw
 `P_model`. Artifact:
 `results/tables/bayesian_dc_edge10_walkforward.csv`.
 
@@ -185,8 +185,8 @@ it is September (+13.3u); October was −8.7u. Same tournament in the
 walk-forward (MAP, all history) is **−5.8%**. It is not a profitable Apertura
 regime.
 
-Calendar **2026 YTD** (train through 2025-12-31, 203 games through 18 Aug):
-log-loss 1.040 vs market 1.013; edge=0 **−7.5%**; edge≥0.05 **−17.8%**.
+Calendar **2026 YTD** (train through 2025-12-31, 237 games through 16 Sep):
+log-loss 1.040 vs market 1.003; edge=0 **−18.6%**; edge≥0.05 **−20.3%**.
 Retraining through Apertura 2025 did not fix Clausura.
 
 Walk-forward all-history, 16 tournaments 2018–2026: **2 of 16** finished
@@ -306,6 +306,8 @@ python scripts/prepare_data.py
 python scripts/fit_bayesian_dc.py --map-only
 python scripts/fit_bayesian_dc.py --map-only --test-from 2026-01-01
 python scripts/eval_tournament_dc.py
+python scripts/eval_tournament_dc.py --predictions-only
+python scripts/eval_open_close.py --predictions results/tables/bayesian_dc_predictions_walkforward.csv --since 2025-07-01
 ```
 
 Holdout seasons default to `2025/2026` and `2026/2027` (`TEST_SEASONS` in
@@ -319,7 +321,7 @@ that date.
 Higher leverage than another estimator on the same 1X2 closes:
 
 - Record **your** odds vs AvgC (real CLV), especially on homes
-- Opening lines, not only closes
+- Lineups / absences / xG (information the books already use)
 - Lineups / absences / xG (information the books already use)
 - Walk-forward mid-tournament refits (not previous-tournament-only) —
   matchday expanding + form overlay already tried; w = 0 is best

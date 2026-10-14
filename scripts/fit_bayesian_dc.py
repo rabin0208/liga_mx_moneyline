@@ -224,8 +224,10 @@ def pick_bets(
     sides: list[str],
     *,
     conf: float,
+    odds_col: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     out = df.copy()
+    price = odds_col or ODDS_COL
     bet_side: list[str | None] = []
     bet_odds: list[float | None] = []
     bet_won: list[bool | None] = []
@@ -250,7 +252,7 @@ def pick_bets(
             bet_profit.append(0.0)
             bet_edge.append(None)
             continue
-        odds = float(row[ODDS_COL[best_side]])
+        odds = float(row[price[best_side]])
         won = str(row["Res"]) == best_side
         bet_side.append(best_side)
         bet_odds.append(odds)

@@ -21,6 +21,17 @@ def remove_vig_3way(p_h: float, p_d: float, p_a: float) -> tuple[float, float, f
     return p_h / total, p_d / total, p_a / total
 
 
+def fair_probs_from_odds(odds_h, odds_d, odds_a) -> tuple[float, float, float]:
+    """De-vigged 1X2 probabilities from decimal prices."""
+    try:
+        oh, od, oa = float(odds_h), float(odds_d), float(odds_a)
+    except (TypeError, ValueError):
+        return float("nan"), float("nan"), float("nan")
+    if min(oh, od, oa) <= 1.0:
+        return float("nan"), float("nan"), float("nan")
+    return remove_vig_3way(implied_prob(oh), implied_prob(od), implied_prob(oa))
+
+
 def double_chance_odds(draw_odds: float, dog_odds: float) -> float:
     """Approximate DC price from 1X2 decimal odds (vig still embedded)."""
     return 1.0 / (implied_prob(draw_odds) + implied_prob(dog_odds))
